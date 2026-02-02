@@ -1,0 +1,906 @@
+import React, { useState, useEffect } from "react";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  onSnapshot,
+  deleteDoc,
+  doc,
+  getDocs,
+} from "firebase/firestore";
+import {
+  getAuth,
+  signInAnonymously,
+  onAuthStateChanged,
+  signInWithCustomToken,
+} from "firebase/auth";
+import {
+  History,
+  Save,
+  Download,
+  Activity,
+  Zap,
+  Server,
+  Battery,
+  BatteryCharging,
+  PlusCircle,
+  ShieldCheck,
+  Trash2,
+  Cloud,
+  Moon,
+  Sun,
+  ChevronDown,
+  Info,
+  FileSpreadsheet,
+} from "lucide-react";
+
+// Firebase Configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyBAnqjbMtG7tWFbCKpaY-UQpwCqHt3hIGo", // 👈 ต้องไม่ว่าง
+  authDomain: "ntlogs-89f22.firebaseapp.com",
+  projectId: "ntlogs-89f22",
+  storageBucket: "ntlogs-89f22.appspot.com",
+  messagingSenderId: "549427490184",
+  appId: "1:549427490184:web:ae23e7853b25a9d0d5de3d",
+};
+
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+const db = getFirestore(app);
+const auth = getAuth(app);
+const currentAppId =
+  typeof __app_id !== "undefined" ? __app_id : "sandbox-server-app";
+
+// Helper to load XLSX library from CDN
+const loadXLSX = () => {
+  return new Promise((resolve) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const script = document.createElement("script");
+    script.src =
+      "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+    script.onload = () => resolve(window.XLSX);
+    document.head.appendChild(script);
+  });
+};
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("check");
+  const [logs, setLogs] = useState([]);
+  const [currentUser, setCurrentUser] = useState("");
+
+  // New metrics: Rectifier (Lithium) and Rectifier (Ah)
+  const [rectLithium, setRectLithium] = useState("");
+  const [rectStandard, setRectStandard] = useState("");
+  const [upsA, setUpsA] = useState("");
+  const [upsB, setUpsB] = useState("");
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
+  const [expandedLogId, setExpandedLogId] = useState(null);
+
+  const locationName = "NT tower ชั้น 12";
+
+  const checkListItems = [
+    "Server Room ",
+    "ความชื้นสัมพัทธ์",
+    "ระบบปรับอากาศ",
+    "พัดลม 4 ตัว",
+    "ถังแก๊สดับเพลิง FM-200",
+    "ตรวจสอบเสียงผิดปกติจากเครื่องเซิร์ฟเวอร์",
+    "ตรวจสอบไฟแสดงสถานะอุปกรณ์ (Server, Switch, UPS)",
+    "ระบบ Rectifier lithium 1000 Ah ",
+    "ระบบ Rectifier",
+    "Power Room ",
+    "ระบบไฟฟ้าฉุกเฉิน (UPS) A,B",
+    "ไม่มีฝุ่นสะสมหรือสิ่งกีดขวางทางอากาศ",
+    "ระบบกล้องวงจรปิด",
+    "ตรวจสอบระบบ Access Control (ล็อกประตู, คีย์การ์ด)",
+    "ไม่มีบุคคลไม่ได้รับอนุญาตเข้ามาในห้อง",
+    "บันทึกเหตุการณ์ผิดปกติ (ถ้ามี)",
+  ];
+
+  const inspectors = [
+    "ธนาพงศ์ บุญปัญญา",
+    "ศุภวัฒน์ สุวรรณฤกษ์",
+    "ณัฐพงศ์ ดำรงเวช",
+    "ธนวัฒน์ สกุลหอม",
+    "จิรศักดิ์ การญบริรักษ์",
+    "ปะยุต เอ้งฉ้วน",
+    "ศุภชัย บ้านม่วง",
+    "กิติภพ โรจนจินดา",
+    "ปริญวัฒน์",
+  ];
+
+  const [formData, setFormData] = useState(
+    checkListItems.map((item) => {
+      let defaultNote = "ปกติ";
+      if (item.includes("FM-200")) defaultNote = "พร้อมใช้งาน";
+      if (item === "บันทึกเหตุการณ์ผิดปกติ (ถ้ามี)") defaultNote = "-";
+      return { name: item, status: true, note: defaultNote };
+    })
+  );
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        setAuthLoading(true);
+        if (
+          typeof __initial_auth_token !== "undefined" &&
+          __initial_auth_token
+        ) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth Error:", err);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const logsCollection = collection(
+      db,
+      "artifacts",
+      currentAppId,
+      "public",
+      "data",
+      "checksheet_logs"
+    );
+
+    const unsubscribe = onSnapshot(
+      logsCollection,
+      (snapshot) => {
+        const data = snapshot.docs.map((doc) => ({
+          docId: doc.id,
+          ...doc.data(),
+        }));
+        setLogs(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+      },
+      (err) => console.error("Firestore Error:", err)
+    );
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const toggleDarkMode = () => setDarkMode(!darkMode);
+
+  const handleStatusChange = (index) => {
+    const newFormData = [...formData];
+    newFormData[index].status = !newFormData[index].status;
+    if (newFormData[index].status === false) {
+      newFormData[index].note = "";
+    } else {
+      if (newFormData[index].name.includes("FM-200"))
+        newFormData[index].note = "พร้อมใช้งาน";
+      else if (newFormData[index].name === "บันทึกเหตุการณ์ผิดปกติ (ถ้ามี)")
+        newFormData[index].note = "-";
+      else newFormData[index].note = "ปกติ";
+    }
+    setFormData(newFormData);
+  };
+
+  const handleNoteChange = (index, value) => {
+    const newFormData = [...formData];
+    newFormData[index].note = value;
+    setFormData(newFormData);
+  };
+
+  const submitLog = async () => {
+    if (!currentUser || !user || isSubmitting) return;
+
+    const missingReasons = formData.filter(
+      (item) => !item.status && !item.note.trim()
+    );
+    if (missingReasons.length > 0) {
+      alert("กรุณาระบุสาเหตุในรายการที่พบปัญหา (✘)");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    const newEntry = {
+      timestamp: Date.now(),
+      date: new Date().toLocaleDateString("th-TH"),
+      time: new Date().toLocaleTimeString("th-TH", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      inspector: currentUser,
+      rectLithium: rectLithium || "0",
+      rectStandard: rectStandard || "0",
+      upsA: upsA || "0",
+      upsB: upsB || "0",
+      items: formData,
+      summary: formData.every((item, idx) => (idx === 14 ? true : item.status))
+        ? "ปกติ"
+        : "พบปัญหา",
+    };
+
+    try {
+      const logsCol = collection(
+        db,
+        "artifacts",
+        currentAppId,
+        "public",
+        "data",
+        "checksheet_logs"
+      );
+      await addDoc(logsCol, newEntry);
+
+      // Reset state
+      setCurrentUser("");
+      setRectLithium("");
+      setRectStandard("");
+      setUpsA("");
+      setUpsB("");
+      setFormData(
+        checkListItems.map((item) => {
+          let defaultNote = "ปกติ";
+          if (item.includes("FM-200")) defaultNote = "พร้อมใช้งาน";
+          if (item === "บันทึกเหตุการณ์ผิดปกติ (ถ้ามี)") defaultNote = "-";
+          return { name: item, status: true, note: defaultNote };
+        })
+      );
+      setActiveTab("history");
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const clearAllData = async () => {
+    if (!user || !window.confirm("ต้องการล้างข้อมูลทั้งหมดบน Cloud หรือไม่?"))
+      return;
+    try {
+      const logsCol = collection(
+        db,
+        "artifacts",
+        currentAppId,
+        "public",
+        "data",
+        "checksheet_logs"
+      );
+      const snapshot = await getDocs(logsCol);
+      await Promise.all(
+        snapshot.docs.map((d) =>
+          deleteDoc(
+            doc(
+              db,
+              "artifacts",
+              currentAppId,
+              "public",
+              "data",
+              "checksheet_logs",
+              d.id
+            )
+          )
+        )
+      );
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const exportAllToExcel = async () => {
+    if (logs.length === 0) return;
+    const XLSX = await loadXLSX();
+    const wb = XLSX.utils.book_new();
+
+    const logsByDate = logs.reduce((acc, log) => {
+      const dateKey = log.date.replace(/\//g, "-");
+      if (!acc[dateKey]) acc[dateKey] = [];
+      acc[dateKey].push(log);
+      return acc;
+    }, {});
+
+    Object.keys(logsByDate)
+      .sort()
+      .reverse()
+      .forEach((dateKey) => {
+        const dayLogs = logsByDate[dateKey];
+        const sheetData = [];
+
+        dayLogs.forEach((log) => {
+          sheetData.push(["📍 สถานที่", locationName, "", ""]);
+          sheetData.push([
+            "👤 ผู้ตรวจสอบ",
+            log.inspector,
+            "📅 วันที่",
+            log.date,
+          ]);
+          sheetData.push(["🕒 เวลาบันทึก", log.time, "📝 สรุป", log.summary]);
+          sheetData.push([
+            "🔋 Rect (Lithium) Ah",
+            log.rectLithium,
+            "🔋 Rectifier Ah",
+            log.rectStandard,
+          ]);
+          sheetData.push([
+            "⚡ UPS A (kW)",
+            log.upsA,
+            "⚡ UPS B (kW)",
+            log.upsB,
+          ]);
+          sheetData.push([]);
+          sheetData.push([
+            "ลำดับ",
+            "รายการตรวจสอบ",
+            "สถานะ",
+            "หมายเหตุ/สาเหตุ",
+          ]);
+
+          log.items.forEach((item, i) => {
+            sheetData.push([
+              i + 1,
+              item.name,
+              item.status ? "✔" : "✘",
+              item.note,
+            ]);
+          });
+
+          sheetData.push([]);
+          sheetData.push([
+            "----------------------------------------------------------------------",
+          ]);
+          sheetData.push([]);
+        });
+
+        const ws = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(wb, ws, dateKey.substring(0, 31));
+      });
+
+    XLSX.writeFile(
+      wb,
+      `NT_Server_Logs_RectAh_${new Date()
+        .toLocaleDateString("th-TH")
+        .replace(/\//g, "-")}.xlsx`
+    );
+  };
+
+  const exportLogSingle = async (e, log) => {
+    e.stopPropagation();
+    const XLSX = await loadXLSX();
+    const wb = XLSX.utils.book_new();
+    const wsData = [
+      ["📋 NT Server Checksheet Report (Rectifier Focus)"],
+      ["สถานที่", locationName],
+      ["วันที่", log.date, "เวลา", log.time],
+      ["ผู้ตรวจสอบ", log.inspector],
+      ["สรุป", log.summary],
+      [
+        "Rectifier (Lithium)",
+        `${log.rectLithium} Ah`,
+        "Rectifier",
+        `${log.rectStandard} Ah`,
+      ],
+      ["UPS A", `${log.upsA} kW`, "UPS B", `${log.upsB} kW`],
+      [],
+      ["ลำดับ", "รายการ", "สถานะ", "หมายเหตุ"],
+      ...log.items.map((item, i) => [
+        i + 1,
+        item.name,
+        item.status ? "✔" : "✘",
+        item.note,
+      ]),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, "Checksheet");
+    XLSX.writeFile(wb, `Checksheet_Ah_${log.date.replace(/\//g, "-")}.xlsx`);
+  };
+
+  if (authLoading)
+    return (
+      <div className="min-h-screen bg-[#f1f5f9] flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+
+  return (
+    <div
+      className={`min-h-screen transition-colors duration-300 ${
+        darkMode ? "bg-slate-950 text-slate-100" : "bg-[#f1f5f9] text-slate-800"
+      } pb-32 font-sans`}
+    >
+      <header
+        className={`sticky top-0 z-40 border-b backdrop-blur-md px-4 py-4 ${
+          darkMode
+            ? "bg-slate-900/90 border-slate-800"
+            : "bg-white/90 border-slate-200"
+        }`}
+      >
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="bg-blue-600 p-2.5 rounded-2xl shadow-lg">
+              <Server className="text-white" size={24} />
+            </div>
+            <div>
+              <h1 className="text-lg font-black leading-none tracking-tight uppercase">
+                NT Server Ops
+              </h1>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mt-1">
+                Rectifier Monitoring Ah
+              </span>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={toggleDarkMode}
+              className={`p-2.5 rounded-xl border transition-all ${
+                darkMode
+                  ? "bg-slate-800 border-slate-700 text-amber-400"
+                  : "bg-white border-slate-200 text-slate-600"
+              }`}
+            >
+              {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+            {activeTab === "history" && (
+              <div className="flex gap-2">
+                <button
+                  onClick={exportAllToExcel}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-bold transition-all shadow-md"
+                >
+                  <FileSpreadsheet size={16} /> Export All
+                </button>
+                <button
+                  onClick={clearAllData}
+                  className="p-2.5 text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl"
+                >
+                  <Trash2 size={20} />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto p-4 md:p-8">
+        {activeTab === "check" ? (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            {/* Sidebar info */}
+            <div className="lg:col-span-4 space-y-6">
+              <div
+                className={`${
+                  darkMode
+                    ? "bg-slate-900 border-slate-800"
+                    : "bg-white border-slate-200"
+                } p-8 rounded-[2.5rem] border shadow-xl space-y-8`}
+              >
+                <h2 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-3 border-b border-slate-100 dark:border-slate-800 pb-5">
+                  <Activity size={16} className="text-blue-600" /> Power Metrics
+                  (Ah)
+                </h2>
+
+                <div className="grid grid-cols-1 gap-4">
+                  <div
+                    className={`${
+                      darkMode ? "bg-slate-800/50" : "bg-slate-50"
+                    } p-5 rounded-3xl border border-transparent hover:border-blue-200 transition-all`}
+                  >
+                    <p className="text-[10px] font-black text-slate-400 mb-3 uppercase tracking-wider">
+                      Rectifier (Lithium) Ah
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+                        <BatteryCharging size={18} />
+                      </div>
+                      <input
+                        type="number"
+                        placeholder="0.0"
+                        className="bg-transparent w-full font-black text-2xl outline-none"
+                        value={rectLithium}
+                        onChange={(e) => setRectLithium(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div
+                    className={`${
+                      darkMode ? "bg-slate-800/50" : "bg-slate-50"
+                    } p-5 rounded-3xl border border-transparent hover:border-indigo-200 transition-all`}
+                  >
+                    <p className="text-[10px] font-black text-slate-400 mb-3 uppercase tracking-wider">
+                      Rectifier Ah
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-indigo-100 rounded-lg text-indigo-600">
+                        <Battery size={18} />
+                      </div>
+                      <input
+                        type="number"
+                        placeholder="0.0"
+                        className="bg-transparent w-full font-black text-2xl outline-none"
+                        value={rectStandard}
+                        onChange={(e) => setRectStandard(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <Zap size={14} className="text-amber-500" /> UPS Load (kW)
+                  </p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-400 px-1 uppercase">
+                        UPS A
+                      </label>
+                      <input
+                        type="number"
+                        placeholder="0.0"
+                        className={`${
+                          darkMode
+                            ? "bg-slate-800 border-slate-700"
+                            : "bg-slate-50 border-slate-100"
+                        } w-full p-4 rounded-2xl border outline-none font-bold`}
+                        value={upsA}
+                        onChange={(e) => setUpsA(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-bold text-slate-400 px-1 uppercase">
+                        UPS B
+                      </label>
+                      <input
+                        type="number"
+                        placeholder="0.0"
+                        className={`${
+                          darkMode
+                            ? "bg-slate-800 border-slate-700"
+                            : "bg-slate-50 border-slate-100"
+                        } w-full p-4 rounded-2xl border outline-none font-bold`}
+                        value={upsB}
+                        onChange={(e) => setUpsB(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-6 border-t border-slate-100 dark:border-slate-800">
+                  <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest">
+                    Assignee
+                  </p>
+                  <select
+                    className={`w-full ${
+                      darkMode
+                        ? "bg-slate-800 border-slate-700"
+                        : "bg-slate-50 border-slate-100"
+                    } p-5 rounded-3xl border outline-none font-black text-sm`}
+                    value={currentUser}
+                    onChange={(e) => setCurrentUser(e.target.value)}
+                  >
+                    <option value="">เลือกผู้ตรวจสอบจากรายชื่อ</option>
+                    {inspectors.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Checksheet area */}
+            <div className="lg:col-span-8">
+              <div
+                className={`${
+                  darkMode
+                    ? "bg-slate-900 border-slate-800"
+                    : "bg-white border-slate-200"
+                } p-8 rounded-[3rem] border shadow-2xl`}
+              >
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-3">
+                    <ShieldCheck className="text-green-600" size={24} />
+                    <h3 className="text-lg font-black">Daily Checklist</h3>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {formData.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className={`${
+                        darkMode
+                          ? "bg-slate-800/40 hover:bg-slate-800"
+                          : "bg-slate-50/50 hover:bg-white"
+                      } p-5 rounded-[1.75rem] border transition-all flex flex-col gap-4 ${
+                        !item.status
+                          ? "border-red-500/50 bg-red-50/10"
+                          : "border-transparent"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-4">
+                          <span
+                            className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-black ${
+                              darkMode
+                                ? "bg-slate-700 text-slate-400"
+                                : "bg-white text-slate-300 shadow-sm"
+                            }`}
+                          >
+                            {(idx + 1).toString().padStart(2, "0")}
+                          </span>
+                          <span
+                            className={`text-sm font-bold tracking-tight ${
+                              !item.status ? "text-red-500" : ""
+                            }`}
+                          >
+                            {item.name}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => handleStatusChange(idx)}
+                          className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${
+                            item.status
+                              ? "bg-green-500 text-white"
+                              : "bg-red-500 text-white scale-110 shadow-lg shadow-red-500/30"
+                          }`}
+                        >
+                          {item.status ? (
+                            <ShieldCheck size={24} />
+                          ) : (
+                            <Info size={24} />
+                          )}
+                        </button>
+                      </div>
+                      <div className="pl-12">
+                        <input
+                          type="text"
+                          placeholder={
+                            item.status
+                              ? "ระบุหมายเหตุเพิ่มเติม (ถ้ามี)"
+                              : "❌ กรุณาระบุสาเหตุที่พบปัญหา"
+                          }
+                          className={`w-full ${
+                            darkMode
+                              ? "bg-slate-900 border-slate-700"
+                              : "bg-white border-slate-200"
+                          } px-5 py-3 rounded-2xl text-xs outline-none focus:ring-2 ${
+                            !item.status
+                              ? "ring-2 ring-red-500 border-red-500"
+                              : "focus:ring-blue-500/20"
+                          }`}
+                          value={item.note}
+                          onChange={(e) =>
+                            handleNoteChange(idx, e.target.value)
+                          }
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  disabled={!currentUser || isSubmitting}
+                  onClick={submitLog}
+                  className={`w-full mt-10 py-6 rounded-[2rem] font-black text-xs uppercase tracking-[0.3em] transition-all ${
+                    currentUser
+                      ? "bg-blue-600 text-white shadow-2xl hover:bg-blue-500"
+                      : "bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed"
+                  }`}
+                >
+                  {isSubmitting ? "Syncing..." : "🚀 บันทึกข้อมูลคลาวด์"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* History View */
+          <div className="space-y-8 animate-in fade-in duration-500">
+            <h2 className="text-3xl font-black tracking-tight flex items-center gap-4 px-4">
+              <History className="text-blue-600" size={32} /> CLOUD LOGS
+            </h2>
+
+            <div className="space-y-4">
+              {logs.length === 0 ? (
+                <div
+                  className={`py-32 text-center border-4 border-dashed rounded-[3rem] ${
+                    darkMode
+                      ? "bg-slate-900 border-slate-800 text-slate-700"
+                      : "bg-white border-slate-200 text-slate-300"
+                  }`}
+                >
+                  <Cloud size={64} className="mx-auto mb-6 opacity-20" />
+                  <p className="font-black uppercase text-sm">No Data Found</p>
+                </div>
+              ) : (
+                logs.map((log) => (
+                  <div
+                    key={log.docId}
+                    className={`${
+                      darkMode
+                        ? "bg-slate-900 border-slate-800"
+                        : "bg-white border-slate-200"
+                    } rounded-[2.5rem] border shadow-lg overflow-hidden`}
+                  >
+                    <div
+                      onClick={() =>
+                        setExpandedLogId(
+                          expandedLogId === log.docId ? null : log.docId
+                        )
+                      }
+                      className="p-7 cursor-pointer flex flex-col lg:flex-row lg:items-center justify-between gap-6"
+                    >
+                      <div className="flex items-center gap-6">
+                        <div
+                          className={`w-16 h-16 rounded-3xl flex items-center justify-center ${
+                            log.summary === "ปกติ"
+                              ? "bg-green-100 text-green-600"
+                              : "bg-red-100 text-red-600"
+                          }`}
+                        >
+                          {log.summary === "ปกติ" ? (
+                            <ShieldCheck size={28} />
+                          ) : (
+                            <Info size={28} />
+                          )}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 mb-1.5 text-[10px] font-black">
+                            <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-slate-500">
+                              {log.date}
+                            </span>
+                            <span className="bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 rounded text-blue-600">
+                              {log.time}
+                            </span>
+                          </div>
+                          <h4 className="font-black text-lg">
+                            {log.inspector}
+                          </h4>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-8">
+                        <div className="hidden sm:flex gap-8 text-center">
+                          <div>
+                            <p className="text-[9px] text-slate-400 font-black uppercase mb-1 tracking-widest">
+                              Rect (Li) / Rect
+                            </p>
+                            <p className="text-sm font-black text-blue-600">
+                              {log.rectLithium} / {log.rectStandard} Ah
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[9px] text-slate-400 font-black uppercase mb-1 tracking-widest">
+                              UPS A / B
+                            </p>
+                            <p className="text-sm font-black text-amber-600">
+                              {log.upsA} / {log.upsB} kW
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={(e) => exportLogSingle(e, log)}
+                            className="p-3 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-2xl text-green-600"
+                          >
+                            <Download size={24} />
+                          </button>
+                          <ChevronDown
+                            className={`transition-transform duration-300 text-slate-300 ${
+                              expandedLogId === log.docId ? "rotate-180" : ""
+                            }`}
+                            size={24}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {expandedLogId === log.docId && (
+                      <div
+                        className={`p-8 border-t ${
+                          darkMode
+                            ? "border-slate-800 bg-slate-950/40"
+                            : "border-slate-50 bg-slate-50/50"
+                        }`}
+                      >
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {log.items?.map((item, i) => (
+                            <div
+                              key={i}
+                              className={`flex items-start gap-4 p-5 rounded-2xl ${
+                                darkMode
+                                  ? "bg-slate-800/60"
+                                  : "bg-white shadow-sm"
+                              } border-l-4 ${
+                                item.status
+                                  ? "border-green-500"
+                                  : "border-red-500"
+                              }`}
+                            >
+                              <div
+                                className={`mt-1 ${
+                                  item.status
+                                    ? "text-green-500"
+                                    : "text-red-500"
+                                }`}
+                              >
+                                {item.status ? (
+                                  <ShieldCheck size={18} />
+                                ) : (
+                                  <Info size={18} />
+                                )}
+                              </div>
+                              <div>
+                                <p className="font-black text-xs">
+                                  {item.name}
+                                </p>
+                                <p
+                                  className={`mt-1.5 text-[11px] font-bold ${
+                                    item.status
+                                      ? "text-slate-400"
+                                      : "text-red-500"
+                                  }`}
+                                >
+                                  {item.note}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </main>
+
+      <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-[400px] px-6 z-50">
+        <div
+          className={`backdrop-blur-2xl border border-white/20 shadow-2xl rounded-[3rem] p-2 flex gap-2 ${
+            darkMode ? "bg-slate-900/80" : "bg-white/80"
+          }`}
+        >
+          <button
+            onClick={() => setActiveTab("check")}
+            className={`flex-1 flex flex-col items-center py-4 rounded-[2.5rem] transition-all ${
+              activeTab === "check"
+                ? "bg-blue-600 text-white shadow-xl"
+                : "text-slate-400"
+            }`}
+          >
+            <PlusCircle size={24} />
+            <span className="text-[10px] font-black mt-1.5 uppercase tracking-tighter">
+              Record Facility
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab("history")}
+            className={`flex-1 flex flex-col items-center py-4 rounded-[2.5rem] transition-all ${
+              activeTab === "history"
+                ? "bg-blue-600 text-white shadow-xl"
+                : "text-slate-400"
+            }`}
+          >
+            <div className="relative">
+              <History size={24} />
+              {logs.length > 0 && (
+                <span className="absolute -top-1 -right-2 bg-red-500 text-white text-[8px] font-black w-4 h-4 rounded-full flex items-center justify-center">
+                  {logs.length}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] font-black mt-1.5 uppercase tracking-tighter">
+              History
+            </span>
+          </button>
+        </div>
+      </nav>
+    </div>
+  );
+};
+
+export default App;
