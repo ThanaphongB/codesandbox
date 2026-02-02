@@ -1,0 +1,1063 @@
+import React, { useState, useEffect, useRef } from "react";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import NTLogoImg from "./assets/NEWNT.png";
+
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  onSnapshot,
+  deleteDoc,
+  doc,
+  updateDoc,
+  getDocs,
+} from "firebase/firestore";
+import {
+  getAuth,
+  signInAnonymously,
+  onAuthStateChanged,
+  signInWithCustomToken,
+} from "firebase/auth";
+import {
+  History,
+  Save,
+  Download,
+  Activity,
+  Zap,
+  Server,
+  Battery,
+  BatteryCharging,
+  PlusCircle,
+  ShieldCheck,
+  Trash2,
+  Cloud,
+  Moon,
+  Sun,
+  ChevronDown,
+  Info,
+  FileSpreadsheet,
+  Edit3,
+  X,
+  RefreshCw,
+  CheckCircle2,
+} from "lucide-react";
+
+// Firebase Configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyBAnqjbMtG7tWFbCKpaY-UQpwCqHt3hIGo", // 👈 ต้องไม่ว่าง
+  authDomain: "ntlogs-89f22.firebaseapp.com",
+  projectId: "ntlogs-89f22",
+  storageBucket: "ntlogs-89f22.appspot.com",
+  messagingSenderId: "549427490184",
+  appId: "1:549427490184:web:ae23e7853b25a9d0d5de3d",
+};
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+const db = getFirestore(app);
+const auth = getAuth(app);
+const currentAppId =
+  typeof __app_id !== "undefined" ? __app_id : "nt-server-ops-v2";
+
+const loadXLSX = () => {
+  return new Promise((resolve) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const script = document.createElement("script");
+    script.src =
+      "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+    script.onload = () => resolve(window.XLSX);
+    document.head.appendChild(script);
+  });
+};
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("check");
+  const [logs, setLogs] = useState([]);
+  const [currentUser, setCurrentUser] = useState("");
+
+  // States for Record/Edit
+  const [editId, setEditId] = useState(null); // If null, we are in 'create' mode
+  const [rectLithium, setRectLithium] = useState("");
+  const [rectStandard, setRectStandard] = useState("");
+  const [upsA, setUpsA] = useState("");
+  const [upsB, setUpsB] = useState("");
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
+  const [expandedLogId, setExpandedLogId] = useState(null);
+
+  const locationName = "NT tower ชั้น 12";
+
+  const checkListItems = [
+    "Server Room ",
+    "ความชื้นสัมพัทธ์",
+    "ระบบปรับอากาศ",
+    "พัดลม 4 ตัว",
+    "ถังแก๊สดับเพลิง FM-200",
+    "ตรวจสอบเสียงผิดปกติจากเครื่องเซิร์ฟเวอร์",
+    "ตรวจสอบไฟแสดงสถานะอุปกรณ์ (Server, Switch, UPS)",
+    "ระบบ Rectifier (lithium) 1000 Ah ",
+    "ระบบ Rectifier",
+    "Power Room ",
+    "ระบบไฟฟ้าฉุกเฉิน (UPS) A,B",
+    "ไม่มีฝุ่นสะสมหรือสิ่งกีดขวางทางอากาศ",
+    "ระบบกล้องวงจรปิด",
+    "ตรวจสอบระบบ Access Control (ล็อกประตู, คีย์การ์ด)",
+    "ไม่มีบุคคลไม่ได้รับอนุญาตเข้ามาในห้อง",
+    "บันทึกเหตุการณ์ผิดปกติ (ถ้ามี)",
+  ];
+
+  const inspectors = [
+    "ธนาพงศ์ บุญปัญญา",
+    "ศุภวัฒน์ สุวรรณฤกษ์",
+    "ณัฐพงศ์ ดำรงเวช",
+    "ธนวัฒน์ สกุลหอม",
+    "จิรศักดิ์ การญบริรักษ์",
+    "ปะยุต เอ้งฉ้วน",
+    "ศุภชัย บ้านม่วง",
+    "กิติภพ โรจนจินดา",
+    "ปริญวัฒน์",
+  ];
+
+  const initialFormData = checkListItems.map((item) => {
+    let defaultNote = "ปกติ";
+    if (item.includes("FM-200")) defaultNote = "พร้อมใช้งาน";
+    if (item === "บันทึกเหตุการณ์ผิดปกติ (ถ้ามี)") defaultNote = "-";
+    return { name: item, status: true, note: defaultNote };
+  });
+
+  const [formData, setFormData] = useState(initialFormData);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        setAuthLoading(true);
+        if (
+          typeof __initial_auth_token !== "undefined" &&
+          __initial_auth_token
+        ) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth Error:", err);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const logsCollection = collection(
+      db,
+      "artifacts",
+      currentAppId,
+      "public",
+      "data",
+      "checksheet_logs"
+    );
+    const unsubscribe = onSnapshot(
+      logsCollection,
+      (snapshot) => {
+        const data = snapshot.docs.map((doc) => ({
+          docId: doc.id,
+          ...doc.data(),
+        }));
+        setLogs(data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)));
+      },
+      (err) => console.error("Firestore Error:", err)
+    );
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleStatusChange = (index) => {
+    const newFormData = [...formData];
+    newFormData[index].status = !newFormData[index].status;
+    if (newFormData[index].status) {
+      if (newFormData[index].name.includes("FM-200"))
+        newFormData[index].note = "พร้อมใช้งาน";
+      else if (newFormData[index].name === "บันทึกเหตุการณ์ผิดปกติ (ถ้ามี)")
+        newFormData[index].note = "-";
+      else newFormData[index].note = "ปกติ";
+    } else {
+      newFormData[index].note = "";
+    }
+    setFormData(newFormData);
+  };
+
+  const handleNoteChange = (index, value) => {
+    const newFormData = [...formData];
+    newFormData[index].note = value;
+    setFormData(newFormData);
+  };
+
+  const resetForm = () => {
+    setEditId(null);
+    setCurrentUser("");
+    setRectLithium("");
+    setRectStandard("");
+    setUpsA("");
+    setUpsB("");
+    setFormData(initialFormData);
+  };
+
+  const submitLog = async () => {
+    if (!currentUser || !user || isSubmitting) return;
+
+    const missingReasons = formData.filter(
+      (item) => !item.status && !item.note.trim()
+    );
+    if (missingReasons.length > 0) {
+      alert("กรุณาระบุสาเหตุในรายการที่พบปัญหา (✘)");
+      return;
+    }
+
+    setIsSubmitting(true);
+    const entryData = {
+      inspector: currentUser,
+      rectLithium: rectLithium || "0",
+      rectStandard: rectStandard || "0",
+      upsA: upsA || "0",
+      upsB: upsB || "0",
+      items: formData,
+      summary: formData.every((item, idx) => (idx === 14 ? true : item.status))
+        ? "ปกติ"
+        : "พบปัญหา",
+      updatedAt: Date.now(),
+    };
+
+    try {
+      if (editId) {
+        const docRef = doc(
+          db,
+          "artifacts",
+          currentAppId,
+          "public",
+          "data",
+          "checksheet_logs",
+          editId
+        );
+        await updateDoc(docRef, entryData);
+      } else {
+        const logsCol = collection(
+          db,
+          "artifacts",
+          currentAppId,
+          "public",
+          "data",
+          "checksheet_logs"
+        );
+        await addDoc(logsCol, {
+          ...entryData,
+          timestamp: Date.now(),
+          date: new Date().toLocaleDateString("th-TH"),
+          time: new Date().toLocaleTimeString("th-TH", {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        });
+      }
+      resetForm();
+      setActiveTab("history");
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const startEdit = (log) => {
+    setEditId(log.docId);
+    setCurrentUser(log.inspector);
+    setRectLithium(log.rectLithium);
+    setRectStandard(log.rectStandard);
+    setUpsA(log.upsA);
+    setUpsB(log.upsB);
+    setFormData(log.items);
+    setActiveTab("check");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const deleteLog = async (id) => {
+    if (!window.confirm("ยืนยันการลบข้อมูลนี้?")) return;
+    try {
+      await deleteDoc(
+        doc(
+          db,
+          "artifacts",
+          currentAppId,
+          "public",
+          "data",
+          "checksheet_logs",
+          id
+        )
+      );
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const exportAllToExcel = async () => {
+    if (logs.length === 0) return;
+    const XLSX = await loadXLSX();
+    const wb = XLSX.utils.book_new();
+    const logsByDate = logs.reduce((acc, log) => {
+      const dateKey = log.date.replace(/\//g, "-");
+      if (!acc[dateKey]) acc[dateKey] = [];
+      acc[dateKey].push(log);
+      return acc;
+    }, {});
+
+    Object.keys(logsByDate)
+      .sort()
+      .reverse()
+      .forEach((dateKey) => {
+        const dayLogs = logsByDate[dateKey];
+        const sheetData = [];
+        dayLogs.forEach((log) => {
+          sheetData.push(["📍 สถานที่", locationName, "", ""]);
+          sheetData.push([
+            "👤 ผู้ตรวจสอบ",
+            log.inspector,
+            "📅 วันที่",
+            log.date,
+          ]);
+          sheetData.push(["🕒 เวลาบันทึก", log.time, "📝 สรุป", log.summary]);
+          sheetData.push([
+            "🔋 Rect (Li) Ah",
+            log.rectLithium,
+            "🔋 Rectifier Ah",
+            log.rectStandard,
+          ]);
+          sheetData.push([
+            "⚡ UPS A (kW)",
+            log.upsA,
+            "⚡ UPS B (kW)",
+            log.upsB,
+          ]);
+          sheetData.push([]);
+          sheetData.push([
+            "ลำดับ",
+            "รายการตรวจสอบ",
+            "สถานะ",
+            "หมายเหตุ/สาเหตุ",
+          ]);
+          log.items.forEach((item, i) =>
+            sheetData.push([
+              i + 1,
+              item.name,
+              item.status ? "✔" : "✘",
+              item.note,
+            ])
+          );
+          sheetData.push(
+            [],
+            [
+              "----------------------------------------------------------------------",
+            ],
+            []
+          );
+        });
+        const ws = XLSX.utils.aoa_to_sheet(sheetData);
+        XLSX.utils.book_append_sheet(wb, ws, dateKey.substring(0, 31));
+      });
+    XLSX.writeFile(
+      wb,
+      `NT_Server_Logs_${new Date().toLocaleDateString("th-TH")}.xlsx`
+    );
+  };
+
+  if (authLoading)
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-4">
+        <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <p className="font-black text-blue-600 animate-pulse uppercase tracking-[0.2em]">
+          NT Tower Connecting...
+        </p>
+      </div>
+    );
+
+  return (
+    <div
+      className={`min-h-screen transition-all duration-500 ${
+        darkMode ? "bg-slate-950 text-slate-100" : "bg-[#f8fafc] text-slate-900"
+      } pb-40 font-sans selection:bg-blue-500 selection:text-white`}
+    >
+      {/* Header Area */}
+      {/* Header Area */}
+      <header
+        className={`sticky top-0 z-50 border-b transition-all duration-300 backdrop-blur-xl px-4 py-4 ${
+          darkMode
+            ? "bg-slate-900/80 border-slate-800"
+            : "bg-white/80 border-slate-200"
+        }`}
+      >
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4 group">
+            <div
+              className={`p-3 rounded-2xl shadow-xl ${
+                darkMode
+                  ? "bg-white shadow-blue-500/20"
+                  : "bg-white shadow-blue-600/20"
+              }`}
+            >
+              <img src={NTLogoImg} alt="NT Logo.png" className="w-16 h-auto" />
+            </div>
+
+            <div>
+              <h1 className="text-xl font-black leading-none tracking-tight uppercase italic">
+                NT Server <span className="text-blue-600">FACILITY</span>
+              </h1>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] block mt-1.5 flex items-center gap-2">
+                <RefreshCw size={10} className="animate-spin text-blue-500" />
+                Cloud Monitoring System
+              </span>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => setDarkMode(!darkMode)}
+              className={`p-3 rounded-2xl border transition-all ${
+                darkMode
+                  ? "bg-slate-800 border-slate-700 text-amber-400"
+                  : "bg-white border-slate-200 text-slate-500"
+              }`}
+            >
+              {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+
+            {activeTab === "history" && logs.length > 0 && (
+              <button
+                onClick={exportAllToExcel}
+                className="flex items-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-black transition-all shadow-xl shadow-emerald-600/20 uppercase tracking-wider"
+              >
+                <FileSpreadsheet size={18} /> Export
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto p-4 md:p-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+        {activeTab === "check" ? (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            {/* Sidebar Panel */}
+            <div className="lg:col-span-4 space-y-6">
+              <div
+                className={`${
+                  darkMode
+                    ? "bg-slate-900 border-slate-800"
+                    : "bg-white border-slate-200"
+                } p-8 rounded-[2.5rem] border shadow-2xl space-y-8 relative overflow-hidden`}
+              >
+                {editId && (
+                  <div className="absolute top-0 left-0 right-0 h-1 bg-amber-500 flex items-center justify-center">
+                    <span className="bg-amber-500 text-white text-[10px] font-black px-4 py-1 rounded-b-xl uppercase tracking-widest">
+                      Editing Mode
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex justify-between items-center">
+                  <h2 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-3">
+                    <Activity size={16} className="text-blue-600" />{" "}
+                    Infrastructure Ah
+                  </h2>
+                  {editId && (
+                    <button
+                      onClick={resetForm}
+                      className="text-red-500 hover:text-red-600 font-bold text-[10px] uppercase underline flex items-center gap-1"
+                    >
+                      <X size={14} /> ยกเลิกการแก้ไข
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 gap-5">
+                  <div
+                    className={`group ${
+                      darkMode ? "bg-slate-800/50" : "bg-slate-50"
+                    } p-6 rounded-[2rem] border-2 border-transparent transition-all focus-within:border-blue-500 focus-within:bg-transparent`}
+                  >
+                    <p className="text-[10px] font-black text-slate-400 mb-3 uppercase tracking-wider group-focus-within:text-blue-500">
+                      Rectifier (Lithium) Ah
+                    </p>
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`p-3 rounded-2xl ${
+                          darkMode
+                            ? "bg-slate-700 text-blue-400"
+                            : "bg-blue-100 text-blue-600"
+                        }`}
+                      >
+                        <BatteryCharging size={20} />
+                      </div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        className="bg-transparent w-full font-black text-3xl outline-none"
+                        value={rectLithium}
+                        onChange={(e) => setRectLithium(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    className={`group ${
+                      darkMode ? "bg-slate-800/50" : "bg-slate-50"
+                    } p-6 rounded-[2rem] border-2 border-transparent transition-all focus-within:border-indigo-500 focus-within:bg-transparent`}
+                  >
+                    <p className="text-[10px] font-black text-slate-400 mb-3 uppercase tracking-wider group-focus-within:text-indigo-500">
+                      Rectifier Ah
+                    </p>
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`p-3 rounded-2xl ${
+                          darkMode
+                            ? "bg-slate-700 text-indigo-400"
+                            : "bg-indigo-100 text-indigo-600"
+                        }`}
+                      >
+                        <Battery size={20} />
+                      </div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        className="bg-transparent w-full font-black text-3xl outline-none"
+                        value={rectStandard}
+                        onChange={(e) => setRectStandard(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 px-1">
+                    <Zap size={14} className="text-amber-500" /> UPS Current
+                    Load (kW)
+                  </p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-400 px-2 uppercase">
+                        UPS A
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        className={`${
+                          darkMode
+                            ? "bg-slate-800 border-slate-700"
+                            : "bg-slate-50 border-slate-100"
+                        } w-full p-4 rounded-2xl border-2 border-transparent focus:border-blue-500 outline-none font-bold transition-all`}
+                        value={upsA}
+                        onChange={(e) => setUpsA(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-400 px-2 uppercase">
+                        UPS B
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        className={`${
+                          darkMode
+                            ? "bg-slate-800 border-slate-700"
+                            : "bg-slate-50 border-slate-100"
+                        } w-full p-4 rounded-2xl border-2 border-transparent focus:border-blue-500 outline-none font-bold transition-all`}
+                        value={upsB}
+                        onChange={(e) => setUpsB(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-8 border-t border-slate-100 dark:border-slate-800">
+                  <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest px-1">
+                    Inspector Name
+                  </p>
+                  <div className="relative group">
+                    <select
+                      className={`w-full appearance-none ${
+                        darkMode
+                          ? "bg-slate-800 border-slate-700"
+                          : "bg-slate-50 border-slate-100"
+                      } p-5 rounded-[2rem] border-2 border-transparent focus:border-blue-600 outline-none font-black text-sm pr-12 transition-all cursor-pointer`}
+                      value={currentUser}
+                      onChange={(e) => setCurrentUser(e.target.value)}
+                    >
+                      <option value="">เลือกรายชื่อผู้ตรวจสอบ</option>
+                      {inspectors.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      className="absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400"
+                      size={18}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Checklist Panel */}
+            <div className="lg:col-span-8">
+              <div
+                className={`${
+                  darkMode
+                    ? "bg-slate-900 border-slate-800 shadow-blue-500/5"
+                    : "bg-white border-slate-200 shadow-blue-500/10"
+                } p-6 md:p-10 rounded-[3rem] border shadow-2xl`}
+              >
+                <div className="flex items-center justify-between mb-10 px-2">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-green-500/10 flex items-center justify-center text-green-600">
+                      <CheckCircle2 size={28} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black italic">
+                        Daily Operations
+                      </h3>
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
+                        Physical Environment Checklist
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {formData.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className={`group flex flex-col gap-4 p-5 rounded-[2rem] border transition-all duration-300 ${
+                        !item.status
+                          ? "bg-red-500/5 border-red-500/40 shadow-xl shadow-red-500/5"
+                          : darkMode
+                          ? "bg-slate-800/40 border-transparent hover:border-blue-500/30"
+                          : "bg-slate-50/50 border-transparent hover:bg-white hover:border-slate-200 shadow-sm hover:shadow-lg"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-4">
+                          <span
+                            className={`w-9 h-9 rounded-2xl flex items-center justify-center text-[11px] font-black transition-colors ${
+                              !item.status
+                                ? "bg-red-500 text-white"
+                                : darkMode
+                                ? "bg-slate-700 text-slate-400"
+                                : "bg-white text-slate-400 shadow-inner"
+                            }`}
+                          >
+                            {idx + 1}
+                          </span>
+                          <span
+                            className={`text-sm font-black tracking-tight ${
+                              !item.status ? "text-red-500" : ""
+                            }`}
+                          >
+                            {item.name}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => handleStatusChange(idx)}
+                          className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${
+                            item.status
+                              ? "bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500 hover:text-white"
+                              : "bg-red-500 text-white scale-105 shadow-lg shadow-red-500/20"
+                          }`}
+                        >
+                          {item.status ? (
+                            <ShieldCheck size={26} />
+                          ) : (
+                            <Info size={26} />
+                          )}
+                        </button>
+                      </div>
+                      <div className="pl-12 pr-2">
+                        <input
+                          type="text"
+                          placeholder={
+                            item.status
+                              ? "ระบุหมายเหตุ (ถ้ามี)"
+                              : "⚠️ กรุณาระบุอาการที่ผิดปกติ"
+                          }
+                          className={`w-full ${
+                            darkMode
+                              ? "bg-slate-900 border-slate-700 focus:bg-slate-950"
+                              : "bg-white border-slate-200 focus:bg-white shadow-inner"
+                          } px-6 py-4 rounded-2xl text-[13px] font-medium outline-none transition-all ${
+                            !item.status
+                              ? "border-2 border-red-500 ring-4 ring-red-500/10"
+                              : "border focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
+                          }`}
+                          value={item.note}
+                          onChange={(e) =>
+                            handleNoteChange(idx, e.target.value)
+                          }
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  disabled={!currentUser || isSubmitting}
+                  onClick={submitLog}
+                  className={`group relative overflow-hidden w-full mt-12 py-7 rounded-[2.5rem] font-black text-[13px] uppercase tracking-[0.4em] transition-all ${
+                    currentUser
+                      ? "bg-blue-600 text-white shadow-2xl hover:bg-blue-500 active:scale-95"
+                      : "bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed"
+                  }`}
+                >
+                  <span className="relative z-10 flex items-center justify-center gap-3">
+                    {isSubmitting ? (
+                      <RefreshCw className="animate-spin" size={20} />
+                    ) : editId ? (
+                      <>
+                        <RefreshCw size={20} /> Update Record
+                      </>
+                    ) : (
+                      <>
+                        <Cloud size={20} /> Sync to Cloud
+                      </>
+                    )}
+                  </span>
+                  {currentUser && !isSubmitting && (
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:animate-[shimmer_2s_infinite]"></div>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* History Area */
+          <div className="max-w-4xl mx-auto space-y-10 animate-in fade-in zoom-in duration-500">
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 px-4">
+              <div>
+                <h2 className="text-4xl font-black italic tracking-tighter flex items-center gap-4">
+                  <History className="text-blue-600 drop-shadow-lg" size={40} />{" "}
+                  LOG <span className="text-blue-600">VAULT</span>
+                </h2>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-[0.4em] mt-3 ml-1 flex items-center gap-2">
+                  Secure Cloud Data Storage{" "}
+                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-6">
+              {logs.length === 0 ? (
+                <div
+                  className={`py-40 text-center border-4 border-dashed rounded-[4rem] ${
+                    darkMode
+                      ? "bg-slate-900 border-slate-800 text-slate-800"
+                      : "bg-white border-slate-200 text-slate-200"
+                  }`}
+                >
+                  <Cloud size={100} className="mx-auto mb-8 opacity-20" />
+                  <p className="font-black uppercase text-lg tracking-widest">
+                    No Logs Found
+                  </p>
+                </div>
+              ) : (
+                logs.map((log) => (
+                  <div
+                    key={log.docId}
+                    className={`group relative transition-all duration-500 ${
+                      darkMode
+                        ? "bg-slate-900 border-slate-800 hover:bg-slate-800"
+                        : "bg-white border-slate-100 hover:bg-slate-50"
+                    } rounded-[3rem] border shadow-xl hover:shadow-2xl overflow-hidden`}
+                  >
+                    <div
+                      onClick={() =>
+                        setExpandedLogId(
+                          expandedLogId === log.docId ? null : log.docId
+                        )
+                      }
+                      className="p-8 cursor-pointer flex flex-col md:flex-row md:items-center justify-between gap-8"
+                    >
+                      <div className="flex items-center gap-7">
+                        <div
+                          className={`w-16 h-16 rounded-[1.75rem] flex items-center justify-center transition-all group-hover:scale-110 shadow-lg ${
+                            log.summary === "ปกติ"
+                              ? "bg-emerald-100 text-emerald-600"
+                              : "bg-red-100 text-red-600"
+                          }`}
+                        >
+                          {log.summary === "ปกติ" ? (
+                            <CheckCircle2 size={32} />
+                          ) : (
+                            <Info size={32} />
+                          )}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-3 mb-2">
+                            <span className="text-[10px] font-black px-3 py-1 rounded-full bg-blue-500/10 text-blue-600 tracking-widest">
+                              {log.date}
+                            </span>
+                            <span className="text-[10px] font-black px-3 py-1 rounded-full bg-slate-500/10 text-slate-500">
+                              {log.time}
+                            </span>
+                          </div>
+                          <h4 className="font-black text-xl italic">
+                            {log.inspector}
+                          </h4>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between md:justify-end gap-6 border-t md:border-t-0 pt-6 md:pt-0 border-slate-100 dark:border-slate-800">
+                        <div className="flex gap-8 text-right pr-4">
+                          <div>
+                            <p className="text-[9px] text-slate-400 font-black uppercase mb-1 tracking-widest">
+                              System Load
+                            </p>
+                            <p className="text-sm font-black text-blue-600">
+                              {log.rectLithium}Ah
+                            </p>
+                            <p className="text-sm font-black text-blue-600">
+                              {log.rectStandard}Ah
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[9px] text-slate-400 font-black uppercase mb-1 tracking-widest">
+                              Health
+                            </p>
+                            <p
+                              className={`text-sm font-black ${
+                                log.summary === "ปกติ"
+                                  ? "text-emerald-500"
+                                  : "text-red-500"
+                              }`}
+                            >
+                              {log.summary}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {/* Edit Button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startEdit(log);
+                            }}
+                            className={`p-3.5 rounded-2xl transition-all ${
+                              darkMode
+                                ? "bg-slate-800 text-amber-500 hover:bg-amber-500 hover:text-white"
+                                : "bg-slate-100 text-amber-600 hover:bg-amber-600 hover:text-white"
+                            }`}
+                            title="Edit Record"
+                          >
+                            <Edit3 size={20} />
+                          </button>
+                          {/* Export Button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              exportAllToExcel();
+                            }}
+                            className={`p-3.5 rounded-2xl transition-all ${
+                              darkMode
+                                ? "bg-slate-800 text-emerald-500 hover:bg-emerald-500 hover:text-white"
+                                : "bg-slate-100 text-emerald-600 hover:bg-emerald-600 hover:text-white"
+                            }`}
+                          >
+                            <Download size={20} />
+                          </button>
+                          {/* Delete Button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteLog(log.docId);
+                            }}
+                            className={`p-3.5 rounded-2xl transition-all ${
+                              darkMode
+                                ? "bg-slate-800 text-red-500 hover:bg-red-500 hover:text-white"
+                                : "bg-slate-100 text-red-600 hover:bg-red-600 hover:text-white"
+                            }`}
+                          >
+                            <Trash2 size={20} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {expandedLogId === log.docId && (
+                      <div
+                        className={`p-8 animate-in slide-in-from-top-4 duration-300 border-t ${
+                          darkMode
+                            ? "border-slate-800 bg-slate-950/40"
+                            : "border-slate-100 bg-slate-50/30"
+                        }`}
+                      >
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="col-span-1 md:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                            <div className="p-4 rounded-2xl bg-white dark:bg-slate-800 border dark:border-slate-700 shadow-sm">
+                              <p className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">
+                                Rectifier (Li)
+                              </p>
+                              <p className="font-black text-blue-500">
+                                {log.rectLithium} Ah
+                              </p>
+                            </div>
+                            <div className="p-4 rounded-2xl bg-white dark:bg-slate-800 border dark:border-slate-700 shadow-sm">
+                              <p className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">
+                                Rectifier (Std)
+                              </p>
+                              <p className="font-black text-indigo-500">
+                                {log.rectStandard} Ah
+                              </p>
+                            </div>
+                            <div className="p-4 rounded-2xl bg-white dark:bg-slate-800 border dark:border-slate-700 shadow-sm">
+                              <p className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">
+                                UPS A
+                              </p>
+                              <p className="font-black text-amber-500">
+                                {log.upsA} kW
+                              </p>
+                            </div>
+                            <div className="p-4 rounded-2xl bg-white dark:bg-slate-800 border dark:border-slate-700 shadow-sm">
+                              <p className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">
+                                UPS B
+                              </p>
+                              <p className="font-black text-amber-500">
+                                {log.upsB} kW
+                              </p>
+                            </div>
+                          </div>
+                          {log.items?.map((item, i) => (
+                            <div
+                              key={i}
+                              className={`flex items-start gap-4 p-5 rounded-2xl ${
+                                darkMode
+                                  ? "bg-slate-800/60"
+                                  : "bg-white shadow-sm"
+                              } border-l-[6px] ${
+                                item.status
+                                  ? "border-emerald-500"
+                                  : "border-red-500"
+                              }`}
+                            >
+                              <div
+                                className={`mt-0.5 ${
+                                  item.status
+                                    ? "text-emerald-500"
+                                    : "text-red-500"
+                                }`}
+                              >
+                                {item.status ? (
+                                  <CheckCircle2 size={18} />
+                                ) : (
+                                  <X size={18} />
+                                )}
+                              </div>
+                              <div>
+                                <p className="font-black text-[12px] tracking-tight">
+                                  {item.name}
+                                </p>
+                                <p
+                                  className={`mt-1.5 text-[11px] font-bold ${
+                                    item.status
+                                      ? "text-slate-400"
+                                      : "text-red-500"
+                                  }`}
+                                >
+                                  {item.note}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Dynamic Floating Navbar */}
+      <nav className="fixed bottom-10 left-1/2 -translate-x-1/2 w-full max-w-[420px] px-8 z-[100]">
+        <div
+          className={`backdrop-blur-3xl border border-white/20 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.3)] rounded-[3.5rem] p-2.5 flex gap-2.5 ${
+            darkMode ? "bg-slate-900/90" : "bg-white/90"
+          }`}
+        >
+          <button
+            onClick={() => {
+              setActiveTab("check");
+              if (!editId) resetForm();
+            }}
+            className={`relative flex-1 flex flex-col items-center py-4 rounded-[2.75rem] transition-all duration-500 ${
+              activeTab === "check"
+                ? "bg-blue-600 text-white shadow-xl shadow-blue-500/40"
+                : "text-slate-400 hover:text-blue-500"
+            }`}
+          >
+            {activeTab === "check" && (
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-white rounded-full mt-2"></div>
+            )}
+            {editId ? (
+              <Edit3 size={24} className="animate-pulse" />
+            ) : (
+              <PlusCircle size={24} />
+            )}
+            <span className="text-[10px] font-black mt-2 uppercase tracking-widest">
+              {editId ? "Update" : "New Record"}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab("history")}
+            className={`relative flex-1 flex flex-col items-center py-4 rounded-[2.75rem] transition-all duration-500 ${
+              activeTab === "history"
+                ? "bg-blue-600 text-white shadow-xl shadow-blue-500/40"
+                : "text-slate-400 hover:text-blue-500"
+            }`}
+          >
+            {activeTab === "history" && (
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-white rounded-full mt-2"></div>
+            )}
+            <div className="relative">
+              <History size={24} />
+              {logs.length > 0 && (
+                <span className="absolute -top-1.5 -right-2 bg-red-500 text-white text-[9px] font-black w-4 h-4 rounded-full border-2 border-white dark:border-slate-900 flex items-center justify-center animate-bounce">
+                  {logs.length}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] font-black mt-2 uppercase tracking-widest">
+              History
+            </span>
+          </button>
+        </div>
+      </nav>
+
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+        @keyframes shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+      `,
+        }}
+      />
+    </div>
+  );
+};
+
+export default App;
